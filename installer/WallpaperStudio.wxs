@@ -1,0 +1,91 @@
+<!--
+  Wallpaper Studio installer (WiX Toolset 5). Build it with ..\build-installer.ps1.
+
+  - Per-user install into %LocalAppData%\Programs\Wallpaper Studio: no admin prompt needed.
+  - Start menu + desktop shortcuts, "Launch Wallpaper Studio" checkbox at the end.
+  - Upgrades in place (same UpgradeCode); closes a running copy first.
+  - Uninstall closes the app, restores the normal wallpaper and removes "Start with Windows".
+    Your library and settings in %AppData%\WallpaperStudio are kept.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <Package Name="Wallpaper Studio"
+           Manufacturer="Wallpaper Studio"
+           Version="$(Version)"
+           UpgradeCode="7d3b1f4e-2c4a-4c8e-9a51-6f0b8e2d9c31"
+           Scope="perUser"
+           Compressed="yes">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- The Id must end in .ico, or Windows can't read the icon file the shortcuts point to. -->
+    <Icon Id="AppIcon.ico" SourceFile="..\app.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <!-- %LocalAppData%\Programs\Wallpaper Studio -->
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsDir" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Wallpaper Studio" />
+      </Directory>
+    </StandardDirectory>
+
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="$(PublishDir)\**" />
+      <Component Id="InstallFolderCleanup">
+        <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\WallpaperStudio" Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut Id="StartMenuShortcut" Name="Wallpaper Studio" Description="Animated wallpapers and desktop effects"
+                  Target="[INSTALLFOLDER]WallpaperStudio.exe" WorkingDirectory="INSTALLFOLDER" Icon="AppIcon.ico" />
+        <RegistryValue Root="HKCU" Key="Software\WallpaperStudio" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder">
+      <Component Id="DesktopShortcut">
+        <Shortcut Id="DesktopShortcut" Name="Wallpaper Studio" Description="Animated wallpapers and desktop effects"
+                  Target="[INSTALLFOLDER]WallpaperStudio.exe" WorkingDirectory="INSTALLFOLDER" Icon="AppIcon.ico" />
+        <RegistryValue Root="HKCU" Key="Software\WallpaperStudio" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="Wallpaper Studio" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+
+    <!-- Ask a running copy to close cleanly before files are replaced or removed. -->
+    <CustomAction Id="CloseRunningApp" Directory="INSTALLFOLDER" Execute="immediate" Return="ignore"
+                  ExeCommand="&quot;[INSTALLFOLDER]WallpaperStudio.exe&quot; --exit" />
+    <!-- Full uninstall: also remove the "Start with Windows" entry. -->
+    <CustomAction Id="UninstallCleanup" Directory="INSTALLFOLDER" Execute="immediate" Return="ignore"
+                  ExeCommand="&quot;[INSTALLFOLDER]WallpaperStudio.exe&quot; --uninstall" />
+    <CustomAction Id="LaunchApp" Directory="INSTALLFOLDER" Return="asyncNoWait"
+                  ExeCommand="&quot;[INSTALLFOLDER]WallpaperStudio.exe&quot;" />
+
+    <InstallExecuteSequence>
+      <Custom Action="CloseRunningApp" Before="InstallValidate" Condition="WIX_UPGRADE_DETECTED" />
+      <Custom Action="UninstallCleanup" Before="InstallValidate" Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+
+    <!-- Wizard: welcome + license, progress, finish with a "launch" checkbox. -->
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+    <WixVariable Id="WixUIBannerBmp" Value="banner.bmp" />
+    <WixVariable Id="WixUIDialogBmp" Value="dialog.bmp" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch Wallpaper Studio" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <UI>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApp"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+    </UI>
+  </Package>
+</Wix>

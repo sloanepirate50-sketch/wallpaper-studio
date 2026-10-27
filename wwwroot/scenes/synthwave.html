@@ -1,0 +1,172 @@
+﻿<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Synthwave</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #090014; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+<script src="fps.js"></script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+  // Retro 80s sunset: striped sun, neon mountains and an endless grid rolling toward you.
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let W, H, dpr, horizon, stars, R, cx, cy, sunFill;
+  let backLayer, backPattern, mountainLayer, floorLayer, hazeLayer; // static layers, drawn once per resize
+  let paused = false, t = 0, last = 0, raf = 0;
+
+  function rand(seed) { return () => (seed = (seed * 16807) % 2147483647) / 2147483647; }
+
+  function layer(w, h) {
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.ceil(w)); c.height = Math.max(1, Math.ceil(h));
+    return [c, c.getContext('2d')];
+  }
+
+  function resize() {
+    // Drawn at 75% resolution and stretched by the GPU: noticeably cheaper, still sharp at desktop scale.
+    dpr = (window.devicePixelRatio || 1) * 0.75;
+    W = canvas.width = Math.floor(innerWidth * dpr);
+    H = canvas.height = Math.floor(innerHeight * dpr);
+    horizon = Math.round(H * 0.6);
+    R = Math.min(W, H) * 0.24; cx = W / 2; cy = horizon - R * 0.35;
+
+    // Sky + the sun's glow.
+    let g;
+    [backLayer, g] = layer(W, horizon);
+    const sky = g.createLinearGradient(0, 0, 0, horizon);
+    sky.addColorStop(0, '#090014');
+    sky.addColorStop(0.55, '#2b0a4f');
+    sky.addColorStop(0.85, '#8a1a7a');
+    sky.addColorStop(1, '#ff3c8e');
+    g.fillStyle = sky;
+    g.fillRect(0, 0, W, horizon);
+    const glow = g.createRadialGradient(cx, cy, R * 0.6, cx, cy, R * 2.1);
+    glow.addColorStop(0, 'rgba(255, 80, 160, 0.45)');
+    glow.addColorStop(1, 'rgba(255, 80, 160, 0)');
+    g.fillStyle = glow;
+    g.fillRect(0, 0, W, horizon);
+    // The sun's stripes are filled with this, so they show exactly the sky behind the sun.
+    backPattern = ctx.createPattern(backLayer, 'no-repeat');
+
+    sunFill = ctx.createLinearGradient(0, cy - R, 0, cy + R);
+    sunFill.addColorStop(0, '#fff275');
+    sunFill.addColorStop(0.5, '#ff9a3c');
+    sunFill.addColorStop(1, '#ff2d95');
+
+    const r = rand(7);
+    stars = Array.from({ length: 160 }, () => ({ x: r() * W, y: r() * horizon * 0.75, s: (0.5 + r() * 1.4) * dpr, p: r() * 6 }));
+
+    // Two layers of jagged mountains.
+    [mountainLayer, g] = layer(W, horizon);
+    [0.16, 0.1].forEach((height, i) => {
+      const step = W / 28;
+      g.beginPath();
+      g.moveTo(-step, horizon);
+      for (let x = -step; x <= W + step; x += step) {
+        const edge = Math.abs(x - W / 2) / (W / 2);           // taller toward the sides
+        const h = H * height * (0.25 + edge * 0.9) * (0.5 + r() * 0.6);
+        g.lineTo(x, horizon - h * (i ? 0.75 : 1));
+      }
+      g.lineTo(W + step, horizon);
+      g.closePath();
+      g.fillStyle = i ? '#14052a' : '#1f0838';
+      g.fill();
+      g.strokeStyle = i ? 'rgba(255, 60, 200, 0.55)' : 'rgba(120, 80, 255, 0.5)';
+      g.lineWidth = 1.5 * dpr;
+      g.stroke();
+    });
+
+    [floorLayer, g] = layer(W, H - horizon);
+    const floor = g.createLinearGradient(0, 0, 0, H - horizon);
+    floor.addColorStop(0, '#1a0233');
+    floor.addColorStop(1, '#07000f');
+    g.fillStyle = floor;
+    g.fillRect(0, 0, W, H - horizon);
+
+    [hazeLayer, g] = layer(W, 80 * dpr);
+    const haze = g.createLinearGradient(0, 0, 0, 80 * dpr);
+    haze.addColorStop(0, 'rgba(255, 60, 160, 0)');
+    haze.addColorStop(0.375, 'rgba(255, 90, 190, 0.55)');
+    haze.addColorStop(1, 'rgba(255, 60, 160, 0)');
+    g.fillStyle = haze;
+    g.fillRect(0, 0, W, 80 * dpr);
+  }
+
+  function draw() {
+    ctx.drawImage(backLayer, 0, 0);
+
+    ctx.fillStyle = '#ffffff';
+    for (const s of stars) {
+      ctx.globalAlpha = 0.35 + 0.65 * Math.abs(Math.sin(t * 0.8 + s.p));
+      ctx.fillRect(s.x, s.y, s.s, s.s);
+    }
+    ctx.globalAlpha = 1;
+
+    // Sun with scrolling horizontal cut-outs.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, W, horizon);
+    ctx.clip();
+    ctx.fillStyle = sunFill;
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
+    // Bands start a little above the sun's middle and thicken toward the horizon, drifting down.
+    ctx.fillStyle = backPattern;
+    const bandTop = cy - R * 0.3, bandSpan = horizon - bandTop, count = 7;
+    for (let i = 0; i < count; i++) {
+      const k = ((i / count) + t * 0.04) % 1;
+      const y = bandTop + k * bandSpan;
+      ctx.fillRect(cx - R, y, R * 2, dpr + k * R * 0.075);
+    }
+    ctx.restore();
+
+    ctx.drawImage(mountainLayer, 0, 0);
+    ctx.drawImage(floorLayer, 0, horizon);
+
+    // Perspective grid. The glow is a wide faint stroke under a thin bright one
+    // (much cheaper than shadowBlur, which re-blurs the whole grid every frame).
+    const grid = new Path2D();
+    const depth = H - horizon, scroll = (t * 1.6) % 1;
+    for (let z = 2 - scroll; z < 40; z += 1) {
+      const y = horizon + depth / z;
+      grid.moveTo(0, y); grid.lineTo(W, y);
+    }
+    const lanes = 22, laneW = W / 7;
+    for (let i = -lanes; i <= lanes; i++) {
+      grid.moveTo(W / 2 + i * laneW * 0.02, horizon);
+      grid.lineTo(W / 2 + i * laneW, H);
+    }
+    ctx.strokeStyle = 'rgba(255, 47, 208, 0.22)';
+    ctx.lineWidth = 6 * dpr;
+    ctx.stroke(grid);
+    ctx.strokeStyle = '#ff3ad6';
+    ctx.lineWidth = 1.6 * dpr;
+    ctx.stroke(grid);
+
+    ctx.drawImage(hazeLayer, 0, horizon - 30 * dpr);
+  }
+
+  function frame(now) {
+    if (paused) { raf = 0; return; }
+    t += Math.min(0.1, (now - last) / 1000);
+    last = now;
+    draw();
+    raf = requestAnimationFrame(frame);
+  }
+
+  window.wpPause = p => {
+    paused = p;
+    if (!p && !raf) { last = performance.now(); raf = requestAnimationFrame(frame); }
+  };
+
+  addEventListener('resize', resize);
+  resize();
+  last = performance.now();
+  raf = requestAnimationFrame(frame);
+</script>
+</body>
+</html>

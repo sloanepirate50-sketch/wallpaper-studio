@@ -1,0 +1,6 @@
+bin/
+artifacts/
+installer/*.wixpdb
+obj/
+.vs/
+*.user

@@ -1,0 +1,86 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Scene Template</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+<script src="fps.js"></script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+  // =====================================================================================
+  //  SCENE TEMPLATE: copy this file to make a new animated wallpaper.
+  //
+  //  1. Copy to wwwroot/scenes/my-scene.html and draw whatever you like below.
+  //  2. Register it in Library.cs → Library.Scenes:
+  //       new("scene:my-scene", "My Scene", WallpaperKind.Scene, "my-scene.html"),
+  //  3. (Optional) add a thumbnail case in Thumbnails.cs; otherwise a placeholder is used.
+  //
+  //  Every monitor gets its own copy of the page, sized to that monitor.
+  //  This example: slowly drifting colored orbs.
+  // =====================================================================================
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let W, H, dpr, orbs = [];
+  let paused = false, last = 0, raf = 0;
+
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    W = canvas.width = Math.floor(innerWidth * dpr);
+    H = canvas.height = Math.floor(innerHeight * dpr);
+    orbs = Array.from({ length: 12 }, () => ({
+      x: Math.random() * W, y: Math.random() * H,
+      vx: (Math.random() - 0.5) * 40 * dpr, vy: (Math.random() - 0.5) * 40 * dpr,
+      r: (80 + Math.random() * 160) * dpr, hue: Math.random() * 360,
+    }));
+  }
+
+  function update(dt) {
+    for (const o of orbs) {
+      o.x += o.vx * dt; o.y += o.vy * dt;
+      if (o.x < 0 || o.x > W) o.vx *= -1;
+      if (o.y < 0 || o.y > H) o.vy *= -1;
+      o.hue = (o.hue + dt * 10) % 360;
+    }
+  }
+
+  function draw() {
+    ctx.fillStyle = '#05050a';
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'lighter';
+    for (const o of orbs) {
+      const g = ctx.createRadialGradient(o.x, o.y, 0, o.x, o.y, o.r);
+      g.addColorStop(0, `hsla(${o.hue}, 90%, 60%, 0.35)`);
+      g.addColorStop(1, `hsla(${o.hue}, 90%, 60%, 0)`);
+      ctx.fillStyle = g;
+      ctx.fillRect(o.x - o.r, o.y - o.r, o.r * 2, o.r * 2);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  function frame(now) {
+    if (paused) { raf = 0; return; }
+    const dt = Math.min(0.1, (now - last) / 1000);
+    last = now;
+    update(dt);
+    draw();
+    raf = requestAnimationFrame(frame);
+  }
+
+  // The app calls this to pause while a fullscreen app/game is in front. Keep it.
+  window.wpPause = p => {
+    paused = p;
+    if (!p && !raf) { last = performance.now(); raf = requestAnimationFrame(frame); }
+  };
+
+  addEventListener('resize', resize);
+  resize();
+  last = performance.now();
+  raf = requestAnimationFrame(frame);
+</script>
+</body>
+</html>

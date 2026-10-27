@@ -1,0 +1,236 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Ping Pong</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #04050a; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+<script src="fps.js"></script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+  // Two AI paddles playing neon pong forever. They're good, but not perfect.
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const DT = 1 / 120;           // fixed physics step
+  const WIN = 11;
+
+  let W, H, dpr, paddles, ball, trail = [], sparks = [];
+  let scores = [0, 0], serveDelay = 0, winner = -1, winTimer = 0, time = 0;
+  let paused = false, acc = 0, last = 0, raf = 0;
+
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    W = canvas.width = Math.floor(innerWidth * dpr);
+    H = canvas.height = Math.floor(innerHeight * dpr);
+    const h = H * 0.15, w = Math.max(10 * dpr, W * 0.008);
+    paddles = [
+      { x: W * 0.06, y: H / 2, h, w, err: 0, hue: 190 },
+      { x: W * 0.94, y: H / 2, h, w, err: 0, hue: 320 },
+    ];
+    serve(Math.random() < 0.5 ? 1 : -1);
+    prerender();
+  }
+
+  let background, paddleSprites, ballSprite;
+
+  // Everything that doesn't move, plus the glowing paddles/ball, is drawn once here.
+  function prerender() {
+    background = document.createElement('canvas');
+    background.width = W; background.height = H;
+    const g = background.getContext('2d');
+    g.fillStyle = '#04050a';
+    g.fillRect(0, 0, W, H);
+    const vignette = g.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.7);
+    vignette.addColorStop(0, 'rgba(40, 30, 90, 0.35)');
+    vignette.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    g.fillStyle = vignette;
+    g.fillRect(0, 0, W, H);
+    g.fillStyle = 'rgba(255, 255, 255, 0.12)';
+    const dash = H / 30;
+    for (let y = dash / 2; y < H; y += dash * 2) g.fillRect(W / 2 - dpr * 2, y, dpr * 4, dash);
+
+    const glow = 24 * dpr, pad = glow * 2;
+    paddleSprites = paddles.map(p => {
+      const c = document.createElement('canvas');
+      c.width = Math.ceil(p.w + pad * 2); c.height = Math.ceil(p.h + pad * 2);
+      const s = c.getContext('2d');
+      s.shadowBlur = glow;
+      s.shadowColor = s.fillStyle = `hsl(${p.hue}, 100%, 62%)`;
+      roundRect(s, pad, pad, p.w, p.h, p.w / 2);
+      return c;
+    });
+    const r = ball.r;
+    ballSprite = document.createElement('canvas');
+    ballSprite.width = ballSprite.height = Math.ceil((r + pad) * 2);
+    const b = ballSprite.getContext('2d');
+    b.shadowBlur = glow;
+    b.shadowColor = b.fillStyle = '#ffffff';
+    b.beginPath(); b.arc(r + pad, r + pad, r, 0, Math.PI * 2); b.fill();
+  }
+
+  function serve(dir) {
+    const speed = H * 0.6;
+    const a = (Math.random() - 0.5) * 0.8;
+    ball = { x: W / 2, y: H * (0.3 + Math.random() * 0.4), vx: Math.cos(a) * speed * dir, vy: Math.sin(a) * speed,
+             r: Math.max(7 * dpr, H * 0.012), speed };
+    trail = [];
+    serveDelay = 0.9;
+    paddles[dir > 0 ? 1 : 0].err = pickError(paddles[dir > 0 ? 1 : 0]);
+  }
+
+  // Most of the time a paddle aims close to center; sometimes it misjudges and misses.
+  function pickError(p) {
+    if (Math.random() < 0.22) return (Math.random() < 0.5 ? -1 : 1) * p.h * (0.62 + Math.random() * 0.3);
+    return (Math.random() - 0.5) * p.h * 0.7;
+  }
+
+  // Where will the ball cross x = px, accounting for bounces off the top and bottom?
+  function predictY(px) {
+    if ((px - ball.x) * ball.vx <= 0) return H / 2;
+    const t = (px - ball.x) / ball.vx;
+    const top = ball.r, span = H - 2 * ball.r;
+    let m = (ball.y + ball.vy * t - top) % (2 * span);
+    if (m < 0) m += 2 * span;
+    return top + (m > span ? 2 * span - m : m);
+  }
+
+  function step(dt) {
+    time += dt;
+    for (const s of sparks) { s.x += s.vx * dt; s.y += s.vy * dt; s.vx *= 0.96; s.vy *= 0.96; s.t += dt; }
+    sparks = sparks.filter(s => s.t < s.life);
+
+    if (winner >= 0) {
+      winTimer -= dt;
+      if (winTimer <= 0) { scores = [0, 0]; winner = -1; serve(Math.random() < 0.5 ? 1 : -1); }
+      return;
+    }
+
+    paddles.forEach((p, i) => {
+      const incoming = i === 0 ? ball.vx < 0 : ball.vx > 0;
+      const target = incoming && serveDelay <= 0
+        ? predictY(p.x) + p.err
+        : H / 2 + Math.sin(time * 0.8 + i * 2) * H * 0.06;
+      const maxV = H * 1.1;
+      p.y += Math.max(-maxV, Math.min(maxV, (target - p.y) * 9)) * dt;
+      p.y = Math.max(p.h / 2, Math.min(H - p.h / 2, p.y));
+    });
+
+    if (serveDelay > 0) { serveDelay -= dt; return; }
+
+    ball.x += ball.vx * dt;
+    ball.y += ball.vy * dt;
+    if (ball.y < ball.r) { ball.y = ball.r; ball.vy = Math.abs(ball.vy); }
+    if (ball.y > H - ball.r) { ball.y = H - ball.r; ball.vy = -Math.abs(ball.vy); }
+
+    paddles.forEach((p, i) => {
+      const dir = i === 0 ? 1 : -1;               // direction the ball leaves this paddle
+      const face = p.x + dir * p.w / 2;
+      const approaching = i === 0 ? ball.vx < 0 : ball.vx > 0;
+      const crossed = i === 0 ? ball.x - ball.r <= face && ball.x > p.x - p.w * 2
+                              : ball.x + ball.r >= face && ball.x < p.x + p.w * 2;
+      if (approaching && crossed && Math.abs(ball.y - p.y) <= p.h / 2 + ball.r) {
+        const off = Math.max(-1, Math.min(1, (ball.y - p.y) / (p.h / 2)));
+        ball.speed = Math.min(ball.speed * 1.06, H * 1.8);
+        const a = off * 0.95;
+        ball.vx = Math.cos(a) * ball.speed * dir;
+        ball.vy = Math.sin(a) * ball.speed;
+        ball.x = face + dir * ball.r;
+        burst(ball.x, ball.y, p.hue, dir);
+        const other = paddles[1 - i];
+        other.err = pickError(other);
+      }
+    });
+
+    if (ball.x < -ball.r * 6) point(1);
+    if (ball.x > W + ball.r * 6) point(0);
+  }
+
+  function point(who) {
+    scores[who]++;
+    if (scores[who] >= WIN) { winner = who; winTimer = 3; return; }
+    serve(who === 0 ? 1 : -1);
+  }
+
+  function burst(x, y, hue, dir) {
+    for (let i = 0; i < 18; i++) {
+      const a = (Math.random() - 0.5) * 2.2;
+      const v = (150 + Math.random() * 350) * dpr;
+      sparks.push({ x, y, vx: Math.cos(a) * v * dir, vy: Math.sin(a) * v, t: 0, life: 0.3 + Math.random() * 0.4, hue });
+    }
+  }
+
+  function draw() {
+    ctx.drawImage(background, 0, 0);
+
+    // Scores.
+    ctx.font = `bold ${Math.round(H * 0.14)}px Consolas, "Courier New", monospace`;
+    ctx.textBaseline = 'top';
+    ctx.textAlign = 'right';
+    ctx.fillStyle = `hsla(${paddles[0].hue}, 100%, 65%, 0.22)`;
+    ctx.fillText(scores[0], W / 2 - W * 0.05, H * 0.06);
+    ctx.textAlign = 'left';
+    ctx.fillStyle = `hsla(${paddles[1].hue}, 100%, 65%, 0.22)`;
+    ctx.fillText(scores[1], W / 2 + W * 0.05, H * 0.06);
+
+    // Ball trail.
+    trail.push({ x: ball.x, y: ball.y });
+    if (trail.length > 16) trail.shift();
+    trail.forEach((t, i) => {
+      const k = i / trail.length;
+      ctx.fillStyle = `rgba(255, 255, 255, ${k * 0.25})`;
+      ctx.beginPath(); ctx.arc(t.x, t.y, ball.r * (0.4 + k * 0.6), 0, Math.PI * 2); ctx.fill();
+    });
+
+    // Paddles and ball with a neon glow (pre-rendered sprites; blurring every frame is expensive).
+    paddles.forEach((p, i) => ctx.drawImage(paddleSprites[i], p.x - paddleSprites[i].width / 2, p.y - paddleSprites[i].height / 2));
+    if (winner < 0) ctx.drawImage(ballSprite, ball.x - ballSprite.width / 2, ball.y - ballSprite.height / 2);
+
+    for (const s of sparks) {
+      ctx.fillStyle = `hsla(${s.hue}, 100%, 70%, ${1 - s.t / s.life})`;
+      ctx.fillRect(s.x - dpr * 1.5, s.y - dpr * 1.5, dpr * 3, dpr * 3);
+    }
+
+    if (winner >= 0) {
+      ctx.font = `bold ${Math.round(H * 0.06)}px Consolas, monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = `hsl(${paddles[winner].hue}, 100%, 70%)`;
+      ctx.fillText(winner === 0 ? '◀ LEFT WINS' : 'RIGHT WINS ▶', W / 2, H / 2);
+    }
+  }
+
+  function roundRect(g, x, y, w, h, r) {
+    g.beginPath();
+    g.moveTo(x + r, y);
+    g.arcTo(x + w, y, x + w, y + h, r);
+    g.arcTo(x + w, y + h, x, y + h, r);
+    g.arcTo(x, y + h, x, y, r);
+    g.arcTo(x, y, x + w, y, r);
+    g.fill();
+  }
+
+  function frame(now) {
+    if (paused) { raf = 0; return; }
+    acc += Math.min(0.25, (now - last) / 1000);
+    last = now;
+    while (acc >= DT) { step(DT); acc -= DT; }
+    draw();
+    raf = requestAnimationFrame(frame);
+  }
+
+  window.wpPause = p => {
+    paused = p;
+    if (!p && !raf) { last = performance.now(); raf = requestAnimationFrame(frame); }
+  };
+
+  addEventListener('resize', resize);
+  resize();
+  last = performance.now();
+  raf = requestAnimationFrame(frame);
+</script>
+</body>
+</html>

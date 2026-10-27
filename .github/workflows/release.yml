@@ -1,0 +1,46 @@
+# Builds the installer on GitHub and publishes it as a release.
+#
+#   git tag v1.0.4
+#   git push origin v1.0.4
+#
+# The release appears under the repository's Releases page with the .msi attached.
+# "Run workflow" on the Actions tab builds an installer without releasing it (download it from the run).
+name: Build installer
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { '0.0.0' }
+          ./build-installer.ps1 -Version $version
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $msi = (Get-ChildItem artifacts -Filter *.msi).FullName
+          gh release create $env:GITHUB_REF_NAME $msi --title "Wallpaper Studio $env:GITHUB_REF_NAME" --generate-notes
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: artifacts/*.msi

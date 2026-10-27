@@ -1,0 +1,114 @@
+﻿<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Warp Speed</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+<script src="fps.js"></script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+  // Flying through space: stars stream past, and every so often the ship jumps to warp.
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const COUNT = 650;
+  const BUCKETS = 10;
+  const buckets = Array.from({ length: BUCKETS }, () => []);
+  let W, H, dpr, cx, cy, focal, stars, nebula;
+  let paused = false, t = 0, last = 0, raf = 0;
+
+  function resize() {
+    // Rendered at half resolution and stretched by the GPU: streaks are motion-blurred anyway,
+    // and it's a quarter of the pixels to rasterize every frame.
+    dpr = (window.devicePixelRatio || 1) * 0.5;
+    W = canvas.width = Math.floor(innerWidth * dpr);
+    H = canvas.height = Math.floor(innerHeight * dpr);
+    cx = W / 2; cy = H / 2;
+    focal = Math.max(W, H) * 0.5;
+    stars = Array.from({ length: COUNT }, () => newStar(Math.random()));
+
+    // Soft colored nebula clouds, drawn once.
+    nebula = document.createElement('canvas');
+    nebula.width = W; nebula.height = H;
+    const n = nebula.getContext('2d');
+    n.fillStyle = '#000005';
+    n.fillRect(0, 0, W, H);
+    for (const [x, y, r, color] of [[0.25, 0.3, 0.45, '60, 40, 160'], [0.75, 0.7, 0.5, '160, 30, 120'], [0.6, 0.2, 0.35, '20, 90, 170']]) {
+      const g = n.createRadialGradient(W * x, H * y, 0, W * x, H * y, Math.max(W, H) * r);
+      g.addColorStop(0, `rgba(${color}, 0.22)`);
+      g.addColorStop(1, `rgba(${color}, 0)`);
+      n.fillStyle = g;
+      n.fillRect(0, 0, W, H);
+    }
+  }
+
+  function newStar(z) {
+    return { x: (Math.random() - 0.5) * 2, y: (Math.random() - 0.5) * 2, z, hue: 190 + Math.random() * 60 };
+  }
+
+  // Cruising most of the time, with a warp surge every ~20 seconds.
+  const speedAt = time => 0.12 + 2.2 * Math.pow(Math.max(0, Math.sin(time * 0.3)), 8);
+
+  function frame(now) {
+    if (paused) { raf = 0; return; }
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    t += dt;
+    const speed = speedAt(t);
+
+    ctx.drawImage(nebula, 0, 0);
+    ctx.lineCap = 'butt';
+
+    // Group streaks into brightness buckets: one path and one stroke per bucket instead of per star.
+    for (const b of buckets) b.length = 0;
+    for (const s of stars) {
+      const prevZ = s.z;
+      s.z -= speed * dt;
+      if (s.z <= 0.02) { Object.assign(s, newStar(1)); continue; }
+
+      const x = cx + s.x / s.z * focal, y = cy + s.y / s.z * focal;
+      if (x < -50 || x > W + 50 || y < -50 || y > H + 50) { Object.assign(s, newStar(1)); continue; }
+      // Streak from where the star was a moment ago (longer at higher speed).
+      const tailZ = Math.min(1, prevZ + speed * 0.04);
+      const px = cx + s.x / tailZ * focal, py = cy + s.y / tailZ * focal;
+      buckets[Math.min(BUCKETS - 1, ((1 - s.z) * BUCKETS) | 0)].push(px, py, x, y);
+    }
+    for (let i = 0; i < BUCKETS; i++) {
+      const seg = buckets[i];
+      if (!seg.length) continue;
+      const near = (i + 0.5) / BUCKETS;
+      ctx.strokeStyle = `hsla(210, 80%, ${70 + near * 30}%, ${Math.min(1, near * 1.4)})`;
+      ctx.lineWidth = Math.max(0.6, near * 2.6) * dpr;
+      ctx.beginPath();
+      for (let k = 0; k < seg.length; k += 4) { ctx.moveTo(seg[k], seg[k + 1]); ctx.lineTo(seg[k + 2], seg[k + 3]); }
+      ctx.stroke();
+    }
+
+    // A faint bright core at the vanishing point during warp.
+    const warp = Math.min(1, speed / 2);
+    if (warp > 0.05) {
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * 0.25);
+      g.addColorStop(0, `rgba(180, 220, 255, ${warp * 0.35})`);
+      g.addColorStop(1, 'rgba(180, 220, 255, 0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+    }
+    raf = requestAnimationFrame(frame);
+  }
+
+  window.wpPause = p => {
+    paused = p;
+    if (!p && !raf) { last = performance.now(); raf = requestAnimationFrame(frame); }
+  };
+
+  addEventListener('resize', resize);
+  resize();
+  last = performance.now();
+  raf = requestAnimationFrame(frame);
+</script>
+</body>
+</html>

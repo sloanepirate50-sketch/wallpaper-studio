@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Wallpaper</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  .media { position: fixed; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<script>
+  // Shows one image, GIF or video. Query: kind=image|video, src=<url>, fit=cover|contain|stretch|center, muted=0|1
+  const q = new URLSearchParams(location.search);
+  const fit = { cover: 'cover', contain: 'contain', stretch: 'fill', center: 'none' }[q.get('fit')] || 'cover';
+
+  let el;
+  if (q.get('kind') === 'video') {
+    el = document.createElement('video');
+    el.autoplay = true;
+    el.loop = true;
+    el.playsInline = true;
+    el.muted = q.get('muted') !== '0';
+  } else {
+    el = document.createElement('img');
+    el.decoding = 'async';
+  }
+  el.className = 'media';
+  el.style.objectFit = fit;
+  el.src = q.get('src');
+  document.body.appendChild(el);
+
+  // Called by the app when a fullscreen program is in front.
+  window.wpPause = paused => {
+    if (el.tagName !== 'VIDEO') return;
+    if (paused) el.pause(); else el.play().catch(() => {});
+  };
+</script>
+</body>
+</html>

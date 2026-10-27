@@ -1,0 +1,138 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Game of Life</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #03040a; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; }
+</style>
+<script src="fps.js"></script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+  // Conway's Game of Life in neon. Newborn cells glow cyan and age toward violet;
+  // dead cells leave a fading ember trail. When the world settles down, it gets reseeded.
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const STEP_MS = 90;
+
+  let W, H, dpr, size, cols, rows;
+  let alive, nextAlive, age, heat, img, small, smallCtx, gridOverlay;
+  let history = [], paused = false, acc = 0, last = 0, raf = 0;
+
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    W = canvas.width = Math.floor(innerWidth * dpr);
+    H = canvas.height = Math.floor(innerHeight * dpr);
+    size = Math.round(11 * dpr);
+    cols = Math.ceil(W / size);
+    rows = Math.ceil(H / size);
+    const n = cols * rows;
+    alive = new Uint8Array(n); nextAlive = new Uint8Array(n);
+    age = new Uint16Array(n); heat = new Float32Array(n);
+
+    // Render one pixel per cell, then scale it up (cheap even for huge screens).
+    small = document.createElement('canvas');
+    small.width = cols; small.height = rows;
+    smallCtx = small.getContext('2d');
+    img = smallCtx.createImageData(cols, rows);
+
+    // Thin dark gaps between cells, drawn once and laid over the top.
+    gridOverlay = document.createElement('canvas');
+    gridOverlay.width = W; gridOverlay.height = H;
+    const g = gridOverlay.getContext('2d');
+    g.fillStyle = 'rgba(3, 4, 10, 0.85)';
+    for (let x = 0; x <= cols; x++) g.fillRect(x * size, 0, Math.max(1, dpr), H);
+    for (let y = 0; y <= rows; y++) g.fillRect(0, y * size, W, Math.max(1, dpr));
+
+    seed(0.22);
+    render();
+  }
+
+  function seed(density) {
+    for (let i = 0; i < alive.length; i++) if (Math.random() < density) { alive[i] = 1; age[i] = 0; }
+  }
+
+  // Drop a few random patches of life onto the board.
+  function sprinkle() {
+    for (let k = 0; k < 10; k++) {
+      const cx = Math.random() * cols | 0, cy = Math.random() * rows | 0, r = 6 + Math.random() * 8 | 0;
+      for (let y = -r; y <= r; y++)
+        for (let x = -r; x <= r; x++) {
+          const i = ((cy + y + rows) % rows) * cols + ((cx + x + cols) % cols);
+          if (Math.random() < 0.4) { alive[i] = 1; age[i] = 0; }
+        }
+    }
+  }
+
+  function step() {
+    let population = 0;
+    for (let y = 0; y < rows; y++) {
+      const up = ((y - 1 + rows) % rows) * cols, mid = y * cols, down = ((y + 1) % rows) * cols;
+      for (let x = 0; x < cols; x++) {
+        const l = (x - 1 + cols) % cols, r = (x + 1) % cols;
+        const n = alive[up + l] + alive[up + x] + alive[up + r] + alive[mid + l] + alive[mid + r]
+                + alive[down + l] + alive[down + x] + alive[down + r];
+        const i = mid + x;
+        const live = alive[i] ? (n === 2 || n === 3) : n === 3;
+        nextAlive[i] = live ? 1 : 0;
+        if (live) { age[i] = alive[i] ? Math.min(age[i] + 1, 999) : 0; population++; }
+        else if (alive[i]) heat[i] = 1;
+        else heat[i] *= 0.82;
+      }
+    }
+    [alive, nextAlive] = [nextAlive, alive];
+
+    // Stagnant (still lifes and blinkers only)? Shake things up.
+    history.push(population);
+    if (history.length > 40) history.shift();
+    if (history.length === 40 && Math.max(...history) - Math.min(...history) < population * 0.02 + 3) {
+      sprinkle();
+      history = [];
+    }
+    if (population < cols * rows * 0.01) seed(0.15);
+  }
+
+  function render() {
+    const d = img.data;
+    for (let i = 0; i < alive.length; i++) {
+      const o = i * 4;
+      if (alive[i]) {
+        // Cyan when newborn, drifting to violet with age.
+        const k = Math.min(1, age[i] / 40);
+        d[o] = 40 + k * 150; d[o + 1] = 230 - k * 150; d[o + 2] = 255; d[o + 3] = 255;
+      } else {
+        const h = heat[i];
+        d[o] = 90 * h; d[o + 1] = 30 * h; d[o + 2] = 150 * h; d[o + 3] = 255;
+      }
+    }
+    smallCtx.putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(small, 0, 0, cols * size, rows * size);
+    ctx.drawImage(gridOverlay, 0, 0);
+  }
+
+  function frame(now) {
+    if (paused) { raf = 0; return; }
+    acc += Math.min(250, now - last);
+    last = now;
+    let changed = false;
+    while (acc >= STEP_MS) { step(); acc -= STEP_MS; changed = true; }
+    if (changed) render();
+    raf = requestAnimationFrame(frame);
+  }
+
+  window.wpPause = p => {
+    paused = p;
+    if (!p && !raf) { last = performance.now(); raf = requestAnimationFrame(frame); }
+  };
+
+  addEventListener('resize', resize);
+  resize();
+  last = performance.now();
+  raf = requestAnimationFrame(frame);
+</script>
+</body>
+</html>

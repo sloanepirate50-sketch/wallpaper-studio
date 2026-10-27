@@ -1,0 +1,311 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Neon Snake</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #050608; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+<script src="fps.js"></script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+  // A self-playing neon snake that roams the whole screen eating food.
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+
+  const STEP_MS = 75;     // time per grid move
+  const GROW = 3;         // segments gained per food
+  const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+  let W, H, CELL, COLS, ROWS, OX, OY, dpr, grid;
+  let snake, food, prevTail, tailMoved, grow, state, deathT, sinceFood, best = 0;
+  let particles = [], hue = 140, foodT = 0;
+  let paused = false, acc = 0, last = 0, raf = 0;
+
+  const key = (x, y) => y * COLS + x;
+  const inBounds = (x, y) => x >= 0 && y >= 0 && x < COLS && y < ROWS;
+  const px = p => OX + (p.x + 0.5) * CELL;
+  const py = p => OY + (p.y + 0.5) * CELL;
+
+  function resize() {
+    dpr = (window.devicePixelRatio || 1) * 0.75; // 75% resolution, stretched by the GPU: cheaper and still sharp
+    W = canvas.width = Math.floor(innerWidth * dpr);
+    H = canvas.height = Math.floor(innerHeight * dpr);
+    CELL = Math.round(30 * dpr);
+    COLS = Math.floor(W / CELL);
+    ROWS = Math.floor(H / CELL);
+    OX = Math.floor((W - COLS * CELL) / 2);
+    OY = Math.floor((H - ROWS * CELL) / 2);
+
+    // Pre-render the dotted background grid once.
+    grid = document.createElement('canvas');
+    grid.width = W; grid.height = H;
+    const g = grid.getContext('2d');
+    const bg = g.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.7);
+    bg.addColorStop(0, '#0b0f14');
+    bg.addColorStop(1, '#030405');
+    g.fillStyle = bg;
+    g.fillRect(0, 0, W, H);
+    g.fillStyle = 'rgba(120, 255, 200, 0.07)';
+    const r = Math.max(1, dpr);
+    for (let y = 0; y < ROWS; y++)
+      for (let x = 0; x < COLS; x++)
+        g.fillRect(OX + (x + 0.5) * CELL - r / 2, OY + (y + 0.5) * CELL - r / 2, r, r);
+
+    reset();
+  }
+
+  function reset() {
+    const cx = COLS >> 1, cy = ROWS >> 1;
+    snake = [];
+    for (let i = 0; i < 5; i++) snake.push({ x: cx - i, y: cy });
+    prevTail = { ...snake[4] };
+    tailMoved = false;
+    grow = 0;
+    state = 'play';
+    sinceFood = 0;
+    placeFood();
+  }
+
+  function placeFood() {
+    const occupied = new Set(snake.map(p => key(p.x, p.y)));
+    if (occupied.size >= COLS * ROWS) { die(); return; }
+    let f;
+    do f = { x: (Math.random() * COLS) | 0, y: (Math.random() * ROWS) | 0 };
+    while (occupied.has(key(f.x, f.y)));
+    food = f;
+    foodT = 0;
+  }
+
+  // ---------- AI ----------
+
+  function bodySet(body, tailFree) {
+    const s = new Set();
+    for (let i = 0; i < body.length - (tailFree ? 1 : 0); i++) s.add(key(body[i].x, body[i].y));
+    return s;
+  }
+
+  // Shortest path from start to goal avoiding blocked cells. Returns cells after start, or null.
+  function bfs(start, goal, blocked) {
+    const N = COLS * ROWS, prev = new Int32Array(N).fill(-1), queue = new Int32Array(N);
+    const s = key(start.x, start.y), g = key(goal.x, goal.y);
+    let head = 0, tail = 0;
+    queue[tail++] = s; prev[s] = s;
+    while (head < tail) {
+      const k = queue[head++];
+      if (k === g) break;
+      const x = k % COLS, y = (k / COLS) | 0;
+      for (const [dx, dy] of DIRS) {
+        const nx = x + dx, ny = y + dy;
+        if (!inBounds(nx, ny)) continue;
+        const nk = key(nx, ny);
+        if (prev[nk] !== -1 || (blocked.has(nk) && nk !== g)) continue;
+        prev[nk] = k;
+        queue[tail++] = nk;
+      }
+    }
+    if (prev[g] === -1) return null;
+    const path = [];
+    for (let k = g; k !== s; k = prev[k]) path.push({ x: k % COLS, y: (k / COLS) | 0 });
+    return path.reverse();
+  }
+
+  function floodSize(start, blocked) {
+    const seen = new Set([key(start.x, start.y)]), stack = [start];
+    while (stack.length) {
+      const p = stack.pop();
+      for (const [dx, dy] of DIRS) {
+        const nx = p.x + dx, ny = p.y + dy, nk = key(nx, ny);
+        if (inBounds(nx, ny) && !seen.has(nk) && !blocked.has(nk)) { seen.add(nk); stack.push({ x: nx, y: ny }); }
+      }
+    }
+    return seen.size;
+  }
+
+  // Where the body would be after walking a path (including growth from eating).
+  function simulate(path) {
+    const body = snake.slice();
+    let g = grow;
+    for (const p of path) {
+      body.unshift(p);
+      if (p.x === food.x && p.y === food.y) g += GROW;
+      if (g > 0) g--; else body.pop();
+    }
+    return body;
+  }
+
+  function tailReachable(body) {
+    if (body.length < 3) return true;
+    return bfs(body[0], body[body.length - 1], bodySet(body, true)) !== null;
+  }
+
+  function chooseMove() {
+    const head = snake[0];
+    const blocked = bodySet(snake, grow === 0);
+
+    // 1. Go for the food if we can still reach our own tail afterwards (so we never trap ourselves).
+    const path = bfs(head, food, blocked);
+    if (path && tailReachable(simulate(path))) return path[0];
+
+    // 2. Otherwise stall safely by chasing the tail, staying far from the food;
+    //    if even that fails, take the move with the most open space.
+    let best = null, bestScore = -Infinity;
+    for (const [dx, dy] of DIRS) {
+      const n = { x: head.x + dx, y: head.y + dy };
+      if (!inBounds(n.x, n.y) || blocked.has(key(n.x, n.y))) continue;
+      const body = simulate([n]);
+      const score = tailReachable(body)
+        ? 1e6 + Math.abs(n.x - food.x) + Math.abs(n.y - food.y) + Math.random()
+        : floodSize(n, bodySet(body, false));
+      if (score > bestScore) { bestScore = score; best = n; }
+    }
+    return best;
+  }
+
+  // ---------- Simulation ----------
+
+  function step() {
+    const next = chooseMove();
+    if (!next) { die(); return; }
+
+    prevTail = { ...snake[snake.length - 1] };
+    snake.unshift(next);
+    if (next.x === food.x && next.y === food.y) {
+      grow += GROW;
+      burst(px(next), py(next));
+      placeFood();
+      sinceFood = 0;
+    } else {
+      sinceFood++;
+    }
+    if (grow > 0) { grow--; tailMoved = false; } else { snake.pop(); tailMoved = true; }
+
+    // Stuck circling for too long: start a fresh game.
+    if (sinceFood > COLS * ROWS * 1.5) die();
+  }
+
+  function die() {
+    if (state !== 'play') return;
+    state = 'dead';
+    deathT = 0;
+    best = Math.max(best, snake.length);
+  }
+
+  function burst(x, y) {
+    for (let i = 0; i < 22; i++) {
+      const a = Math.random() * Math.PI * 2, v = (60 + Math.random() * 220) * dpr;
+      particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0.5 + Math.random() * 0.4, t: 0 });
+    }
+  }
+
+  // ---------- Rendering ----------
+
+  function lerp(a, b, t) { return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }; }
+
+  function draw(t, dt) {
+    ctx.drawImage(grid, 0, 0);
+
+    // Food: pulsing orb with a soft halo.
+    foodT += dt;
+    const fx = px(food), fy = py(food);
+    const pulse = 1 + 0.15 * Math.sin(foodT * 6);
+    const halo = ctx.createRadialGradient(fx, fy, 0, fx, fy, CELL * 1.4 * pulse);
+    halo.addColorStop(0, 'rgba(255, 70, 130, 0.55)');
+    halo.addColorStop(1, 'rgba(255, 70, 130, 0)');
+    ctx.fillStyle = halo;
+    ctx.fillRect(fx - CELL * 2, fy - CELL * 2, CELL * 4, CELL * 4);
+    ctx.fillStyle = '#ff5a8c';
+    ctx.beginPath(); ctx.arc(fx, fy, CELL * 0.26 * pulse, 0, Math.PI * 2); ctx.fill();
+
+    // Body as a smooth polyline; the head and tail glide between cells.
+    const pts = [lerp(snake[1] || snake[0], snake[0], t)];
+    for (let i = 1; i < snake.length; i++) pts.push(snake[i]);
+    if (tailMoved) pts.push(lerp(prevTail, snake[snake.length - 1], t));
+    const screen = pts.map(p => ({ x: px(p), y: py(p) }));
+
+    let alpha = 1;
+    if (state === 'dead') alpha = Math.max(0, 1 - deathT / 1.4) * (Math.sin(deathT * 30) > 0 ? 1 : 0.4);
+    ctx.globalAlpha = alpha;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    ctx.strokeStyle = `hsla(${hue}, 100%, 60%, 0.13)`;
+    ctx.lineWidth = CELL * 1.3;
+    ctx.beginPath();
+    screen.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+    ctx.stroke();
+
+    ctx.lineWidth = CELL * 0.62;
+    // The color gradient along the body is drawn in short runs (one stroke per 4 segments, not per segment).
+    const RUN = 4;
+    for (let i = 0; i < screen.length - 1; i += RUN) {
+      const light = 62 - Math.min(i, 40) * 0.5;
+      ctx.strokeStyle = `hsl(${(hue + i * 3) % 360}, 100%, ${light}%)`;
+      ctx.beginPath();
+      ctx.moveTo(screen[i].x, screen[i].y);
+      for (let j = i + 1; j <= Math.min(i + RUN, screen.length - 1); j++) ctx.lineTo(screen[j].x, screen[j].y);
+      ctx.stroke();
+    }
+
+    // Head with eyes looking where it's going.
+    const h = screen[0];
+    const d = snake[1] ? { x: snake[0].x - snake[1].x, y: snake[0].y - snake[1].y } : { x: 1, y: 0 };
+    ctx.fillStyle = `hsl(${hue}, 100%, 72%)`;
+    ctx.beginPath(); ctx.arc(h.x, h.y, CELL * 0.4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#04110b';
+    for (const side of [-1, 1]) {
+      const ex = h.x + d.x * CELL * 0.14 - d.y * side * CELL * 0.16;
+      const ey = h.y + d.y * CELL * 0.14 + d.x * side * CELL * 0.16;
+      ctx.beginPath(); ctx.arc(ex, ey, CELL * 0.07, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // Food burst particles.
+    particles = particles.filter(p => (p.t += dt) < p.life);
+    for (const p of particles) {
+      p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.94; p.vy *= 0.94;
+      ctx.fillStyle = `rgba(255, 120, 170, ${1 - p.t / p.life})`;
+      ctx.fillRect(p.x - 2 * dpr, p.y - 2 * dpr, 4 * dpr, 4 * dpr);
+    }
+
+    // Small HUD in the top-right corner, away from desktop icons.
+    ctx.font = `${Math.round(12 * dpr)}px Consolas, monospace`;
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = 'rgba(160, 255, 210, 0.28)';
+    ctx.fillText(`LENGTH ${snake.length}   BEST ${Math.max(best, snake.length)}`, W - 16 * dpr, 14 * dpr);
+    ctx.textAlign = 'left';
+  }
+
+  function frame(now) {
+    if (paused) { raf = 0; return; }
+    const ms = Math.min(250, now - last);
+    last = now;
+    hue = (hue + ms * 0.006) % 360;
+
+    if (state === 'play') {
+      acc += ms;
+      while (acc >= STEP_MS && state === 'play') { acc -= STEP_MS; step(); }
+    } else {
+      deathT += ms / 1000;
+      if (deathT > 1.6) { reset(); acc = 0; }
+    }
+    draw(state === 'play' ? Math.min(1, acc / STEP_MS) : 1, ms / 1000);
+    raf = requestAnimationFrame(frame);
+  }
+
+  window.wpPause = p => {
+    paused = p;
+    if (!p && !raf) { last = performance.now(); raf = requestAnimationFrame(frame); }
+  };
+
+  addEventListener('resize', resize);
+  resize();
+  last = performance.now();
+  raf = requestAnimationFrame(frame);
+</script>
+</body>
+</html>

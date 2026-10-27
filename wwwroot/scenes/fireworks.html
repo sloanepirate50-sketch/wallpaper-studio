@@ -1,0 +1,184 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fireworks</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #070818; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+<script src="fps.js"></script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+  // A fireworks show over a city at night: peonies, rings and golden willows.
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let W, H, dpr, gravity, sky, skyline;
+  let rockets = [], sparks = [], flashes = [];
+  const FADE_LEVELS = 6, groups = new Map();
+  let nextLaunch = 0.5, paused = false, last = 0, raf = 0;
+
+  function resize() {
+    dpr = (window.devicePixelRatio || 1) * 0.75; // 75% resolution, stretched by the GPU: cheaper and still sharp
+    W = canvas.width = Math.floor(innerWidth * dpr);
+    H = canvas.height = Math.floor(innerHeight * dpr);
+    gravity = H * 0.28;
+
+    sky = document.createElement('canvas');
+    sky.width = W; sky.height = H;
+    const s = sky.getContext('2d');
+    const g = s.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#04040f');
+    g.addColorStop(0.7, '#0c0f2a');
+    g.addColorStop(1, '#1b1636');
+    s.fillStyle = g;
+    s.fillRect(0, 0, W, H);
+    for (let i = 0; i < 140; i++) {
+      s.fillStyle = `rgba(255, 255, 255, ${0.2 + Math.random() * 0.5})`;
+      s.fillRect(Math.random() * W, Math.random() * H * 0.6, dpr, dpr);
+    }
+    ctx.drawImage(sky, 0, 0);
+
+    // City skyline with lit windows, drawn once.
+    skyline = document.createElement('canvas');
+    skyline.width = W; skyline.height = H;
+    const c = skyline.getContext('2d');
+    let x = 0;
+    while (x < W) {
+      const w = (40 + Math.random() * 90) * dpr;
+      const h = H * (0.07 + Math.random() * 0.2);
+      c.fillStyle = '#05060d';
+      c.fillRect(x, H - h, w + 1, h);
+      if (Math.random() < 0.25) c.fillRect(x + w / 2 - dpr, H - h - 18 * dpr, 2 * dpr, 18 * dpr);
+      for (let wy = H - h + 8 * dpr; wy < H - 6 * dpr; wy += 11 * dpr)
+        for (let wx = x + 6 * dpr; wx < x + w - 8 * dpr; wx += 10 * dpr)
+          if (Math.random() < 0.28) {
+            c.fillStyle = `rgba(255, ${190 + Math.random() * 50 | 0}, 110, ${0.45 + Math.random() * 0.45})`;
+            c.fillRect(wx, wy, 4 * dpr, 5 * dpr);
+          }
+      x += w;
+    }
+  }
+
+  function launch() {
+    const x = W * (0.12 + Math.random() * 0.76);
+    const apex = H * (0.12 + Math.random() * 0.33);
+    const vy = -Math.sqrt(2 * gravity * (H - apex)); // reach roughly the apex height
+    rockets.push({ x, y: H, vx: (Math.random() - 0.5) * W * 0.03, vy, hue: Math.round(Math.random() * 359),
+                   type: ['peony', 'peony', 'ring', 'willow', 'duo'][Math.random() * 5 | 0] });
+  }
+
+  function explode(r) {
+    const n = r.type === 'ring' ? 70 : r.type === 'willow' ? 110 : 140;
+    const power = H * (r.type === 'willow' ? 0.22 : 0.3);
+    const hue2 = (r.hue + 140) % 359;
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const v = r.type === 'ring' ? power : power * Math.sqrt(Math.random());
+      const willow = r.type === 'willow';
+      sparks.push({
+        x: r.x, y: r.y, px: r.x, py: r.y,
+        vx: Math.cos(a) * v, vy: Math.sin(a) * v,
+        life: willow ? 2.6 + Math.random() : 1.2 + Math.random() * 0.8, t: 0,
+        hue: willow ? 42 : r.type === 'duo' && i % 2 ? hue2 : r.hue,
+        sat: willow ? 90 : 100, drag: willow ? 0.965 : 0.975,
+        twinkle: Math.random() < 0.3,
+      });
+    }
+    flashes.push({ x: r.x, y: r.y, t: 0 });
+  }
+
+  function update(dt) {
+    nextLaunch -= dt;
+    if (nextLaunch <= 0) {
+      const salvo = Math.random() < 0.2 ? 3 : 1;
+      for (let i = 0; i < salvo; i++) launch();
+      nextLaunch = 0.5 + Math.random() * 1.3;
+    }
+
+    for (const r of rockets) {
+      r.x += r.vx * dt; r.y += r.vy * dt; r.vy += gravity * dt;
+      if (r.vy > -H * 0.04) { r.dead = true; explode(r); }
+      sparks.push({ x: r.x, y: r.y, px: r.x, py: r.y, vx: 0, vy: H * 0.02, life: 0.35, t: 0, hue: 35, sat: 70, drag: 0.9 });
+    }
+    rockets = rockets.filter(r => !r.dead);
+
+    for (const s of sparks) {
+      s.px = s.x; s.py = s.y;
+      const k = Math.pow(s.drag, dt * 60);
+      s.vx *= k; s.vy = s.vy * k + gravity * 0.45 * dt;
+      s.x += s.vx * dt; s.y += s.vy * dt;
+      s.t += dt;
+    }
+    sparks = sparks.filter(s => s.t < s.life && s.y < H);
+    for (const f of flashes) f.t += dt;
+    flashes = flashes.filter(f => f.t < 0.25);
+  }
+
+  function draw() {
+    // Fade the previous frame toward the sky, leaving glowing trails.
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 0.22;
+    ctx.drawImage(sky, 0, 0);
+    ctx.globalAlpha = 1;
+
+    ctx.globalCompositeOperation = 'lighter';
+    for (const f of flashes) {
+      const r = H * 0.22;
+      const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, r);
+      g.addColorStop(0, `rgba(255, 230, 200, ${0.12 * (1 - f.t / 0.25)})`);
+      g.addColorStop(0.4, `rgba(255, 220, 190, ${0.03 * (1 - f.t / 0.25)})`);
+      g.addColorStop(1, 'rgba(255, 230, 200, 0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(f.x - r, f.y - r, r * 2, r * 2); // only the area the flash can reach
+    }
+
+    // Batch sparks by color and fade level: one path + stroke per group instead of per spark.
+    for (const list of groups.values()) list.length = 0;
+    for (const s of sparks) {
+      if (s.twinkle && Math.random() < 0.3) continue;
+      const level = Math.min(FADE_LEVELS - 1, ((1 - s.t / s.life) * FADE_LEVELS) | 0);
+      const key = (s.hue * 101 + s.sat) * 10 + level; // hue 0-359, sat 0-100, level 0-9
+      let list = groups.get(key);
+      if (!list) { list = []; groups.set(key, list); }
+      list.push(s.px, s.py, s.x, s.y);
+    }
+    ctx.lineCap = 'round';
+    for (const [key, seg] of groups) {
+      if (!seg.length) { groups.delete(key); continue; }
+      const level = key % 10, rest = Math.floor(key / 10), sat = rest % 101, hue = Math.floor(rest / 101);
+      const fade = (level + 0.5) / FADE_LEVELS;
+      ctx.strokeStyle = `hsla(${hue}, ${sat}%, ${55 + fade * 25}%, ${fade})`;
+      ctx.lineWidth = (1 + fade * 1.6) * dpr;
+      ctx.beginPath();
+      for (let k = 0; k < seg.length; k += 4) { ctx.moveTo(seg[k], seg[k + 1]); ctx.lineTo(seg[k + 2], seg[k + 3]); }
+      ctx.stroke();
+    }
+
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(skyline, 0, 0);
+  }
+
+  function frame(now) {
+    if (paused) { raf = 0; return; }
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    update(dt);
+    draw();
+    raf = requestAnimationFrame(frame);
+  }
+
+  window.wpPause = p => {
+    paused = p;
+    if (!p && !raf) { last = performance.now(); raf = requestAnimationFrame(frame); }
+  };
+
+  addEventListener('resize', resize);
+  resize();
+  last = performance.now();
+  raf = requestAnimationFrame(frame);
+</script>
+</body>
+</html>

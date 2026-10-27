@@ -1,0 +1,113 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Digital Rain</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+<script src="fps.js"></script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+  // Terminal-style characters raining down the screen.
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const GLYPHS = 'ｦｱｳｴｵｶｷｹｺｻｼｽｾｿﾀﾂﾃﾅﾆﾇﾈﾊﾋﾎﾏﾐﾑﾒﾓﾔﾕﾗﾘﾜ012345789Z:・."=*+-<>¦|ç'.split('');
+  const STEP_MS = 33;           // fixed simulation rate, independent of monitor refresh
+  const FADE = 'rgba(0, 0, 0, 0.06)';
+
+  let W, H, size, cols, drops;
+  let paused = false, acc = 0, last = 0, raf = 0;
+
+  const pick = () => GLYPHS[(Math.random() * GLYPHS.length) | 0];
+
+  function newDrop(start) {
+    return {
+      y: start ? -Math.random() * (H / size) * 1.5 : -Math.random() * 25,
+      speed: 0.3 + Math.random() * 0.8,  // rows per step
+      head: null,                         // { ch, row } of the bright leading glyph
+    };
+  }
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    W = canvas.width = Math.floor(innerWidth * dpr);
+    H = canvas.height = Math.floor(innerHeight * dpr);
+    size = Math.round(18 * dpr);
+    cols = Math.ceil(W / size);
+    drops = Array.from({ length: cols }, () => newDrop(true));
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  function settleHead(col, d) {
+    // Repaint the previous head in normal green so only the newest glyph glows white.
+    if (!d.head) return;
+    const x = col * size, y = d.head.row * size;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(x, y, size, size);
+    ctx.fillStyle = '#00ff46';
+    ctx.fillText(d.head.ch, x, y);
+  }
+
+  function step() {
+    ctx.fillStyle = FADE;
+    ctx.fillRect(0, 0, W, H);
+    ctx.font = `${size}px "MS Gothic", "Yu Gothic", "Consolas", monospace`;
+    ctx.textBaseline = 'top';
+
+    for (let i = 0; i < cols; i++) {
+      const d = drops[i];
+      const prevRow = Math.floor(d.y);
+      d.y += d.speed;
+      const row = Math.floor(d.y);
+
+      if (row !== prevRow && row >= 0) {
+        settleHead(i, d);
+        const ch = pick();
+        ctx.fillStyle = '#e6ffe6';
+        ctx.fillText(ch, i * size, row * size);
+        d.head = { ch, row };
+      }
+
+      // Occasionally flicker a glyph somewhere in the trail.
+      if (d.head && Math.random() < 0.02) {
+        const r = d.head.row - 2 - ((Math.random() * 12) | 0);
+        if (r >= 0) {
+          ctx.fillStyle = '#000';
+          ctx.fillRect(i * size, r * size, size, size);
+          ctx.fillStyle = '#0c9c35';
+          ctx.fillText(pick(), i * size, r * size);
+        }
+      }
+
+      if (row * size > H && Math.random() > 0.97) {
+        settleHead(i, d);
+        drops[i] = newDrop(false);
+      }
+    }
+  }
+
+  function frame(now) {
+    if (paused) { raf = 0; return; }
+    acc += Math.min(250, now - last);
+    last = now;
+    while (acc >= STEP_MS) { step(); acc -= STEP_MS; }
+    raf = requestAnimationFrame(frame);
+  }
+
+  window.wpPause = p => {
+    paused = p;
+    if (!p && !raf) { last = performance.now(); raf = requestAnimationFrame(frame); }
+  };
+
+  addEventListener('resize', resize);
+  resize();
+  last = performance.now();
+  raf = requestAnimationFrame(frame);
+</script>
+</body>
+</html>
